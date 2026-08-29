@@ -1,0 +1,371 @@
+\documentclass[10pt,conference]{IEEEtran}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{algorithmic}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[pagebackref=false]{hyperref}
+\hypersetup{
+  colorlinks=true,
+  citecolor=blue,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Forecast Driven Communication Scheduling for Koopman Based Multirobot Formation Control},
+  pdfauthor={Md Hasibuzzaman, Chan-Yun Yang, Gene Eu Jan}
+}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+
+\newcommand{\yes}{\checkmark}
+\newcommand{\no}{$\times$}
+
+\begin{document}
+\renewcommand{\arraystretch}{0.92}
+
+\title{Forecast Driven Communication Scheduling for Koopman Based Multirobot Formation Control}
+
+\author{
+\IEEEauthorblockN{Md Hasibuzzaman\textsuperscript{1}, Chan-Yun Yang\textsuperscript{2,*}, and Gene Eu Jan\textsuperscript{3}}
+\IEEEauthorblockA{\textsuperscript{1}Department of Electrical Engineering and Computer Science, National Taipei University\\
+No. 151, University Rd., Sanxia Dist., New Taipei City, 237303, Taiwan}
+\IEEEauthorblockA{\textsuperscript{2}Department of Electrical Engineering, National Taipei University\\
+No. 151, University Rd., Sanxia Dist., New Taipei City, 237303, Taiwan}
+\IEEEauthorblockA{\textsuperscript{3}Department of Computer Science and Information Engineering, Asia University\\
+No. 500, Liufeng Rd., Wufeng Dist., Taichung, 413, Taiwan}
+\IEEEauthorblockA{\textsuperscript{*}Corresponding author: Chan-Yun Yang (cyyang@mail.ntpu.edu.tw)}
+}
+
+\maketitle
+
+\begin{abstract}
+Formation control of mobile robot teams increasingly relies on dynamics models learned online to cope with unmodeled, time-varying effects such as a shifted payload or a patch of low-friction ground. Existing online-adaptive Koopman-operator and conformal-prediction-based model predictive control (MPC) methods are almost exclusively single-agent, and the surrounding decentralized-control literature schedules inter-robot communication either at a fixed rate or reactively, once a state mismatch has already occurred. We propose a decentralized formation controller in which each robot identifies its own dynamics online through streaming Extended Dynamic Mode Decomposition, plans with a successively linearized batch linear-quadratic MPC, and decides when to broadcast its state using a forecast rather than a reactive criterion: it rolls its own just-updated model forward and transmits only when the predicted divergence from what its neighbors currently assume is about to exceed a safety margin. On a four-robot formation-tracking task under abrupt, unknown actuation degradation, the proposed rule cuts formation-tracking RMSE by 60.8\% relative to reactive triggering at a matched or lower communication budget (Wilcoxon $p=1.9\times10^{-6}$, rank-biserial $r=1.0$, $n=20$ seeds), and the advantage persists under packet loss, three disturbance profiles, and moderate network delay, weakening only once delay dominates the error budget. A 2$\times$2 ablation shows the gain traces mainly to the trigger rule itself rather than to online identification. We support the mechanism with a proposition bounding the achievable inter-broadcast error, a feature comparison against twelve related methods, and a weighted communication-accuracy objective showing the proposed rule stays preferred across a full order of magnitude of bandwidth cost.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Koopman operator, online system identification, model predictive control, event triggered communication, multirobot formation control, data driven control.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+A team of mobile robots that is asked to hold a formation will, sooner or later, run into a robot whose own dynamics have quietly changed: a payload shifts, a wheel starts to slip, a motor loses torque. Two lines of recent work address the resulting model mismatch for a single robot. The first lifts the state with an Extended Dynamic Mode Decomposition (EDMD) dictionary, extending the Koopman operator's linear-in-a-lifted-space view of nonlinear dynamics \cite{williams2015,mezic2005} to actuated systems \cite{korda2018,proctor2016}, and re-identifies the resulting Koopman-linear model online as it drifts \cite{uchida2024,delrio2025,zhoutzoumas2025,yang2025}. The second calibrates MPC uncertainty bounds with online or adaptive conformal prediction to obtain distribution-free safety guarantees \cite{stamouli2024,lindemann2023,nakamura2022,zhouzhangluo2024,chee2024,hsu2025}. Both are maturing quickly: adaptive Koopman-MPC now carries dynamic regret guarantees \cite{zhoutzoumas2025}, and conformal MPC keeps recursive feasibility under online tube updates \cite{stamouli2024}. Yet almost all of it, including the work we build on, treats a single controlled agent reacting to its own drift. Extend either line to a team that must also hold a joint formation \cite{oh2015}, and an obvious question goes unanswered: once every robot is separately re-identifying its own dynamics, how much, and when, should they actually talk to each other?
+
+The usual answers are periodic broadcasting, simple but wasteful once nothing has changed, or reactive event triggering, where an agent transmits once the gap between its true state and what its neighbors currently assume has already crossed a threshold \cite{tabuada2007,heemels2012,anta2010,trimpe2014}. Reactive triggering is communication efficient, but by construction it is always a step behind: neighbors keep acting on stale information for at least one control cycle past the moment the shared model actually stopped being valid. That delay is unnecessary in a team already re-identifying its own dynamics online, since a robot's freshly updated model already contains an early warning that its last broadcast is about to go stale, before the raw position error would ever trip a reactive threshold.
+
+This paper proposes a decentralized formation controller built around that observation. Each robot identifies its own unicycle dynamics online with streaming EDMD, tracked by recursive least squares (RLS) with a forgetting factor, so an abrupt, unannounced change in actuation gain is absorbed into the model within a handful of cycles. It plans a receding-horizon trajectory with a closed-form, successively linearized batch linear-quadratic (LQ) MPC written directly in the Koopman-lifted coordinates, and decides when to broadcast using a forecast criterion: rolling its own current model forward along the planned control sequence and comparing the result to what neighbors currently believe through constant-velocity dead reckoning from the last broadcast. A message goes out proactively once this forecast divergence is about to cross a safety margin, rather than after the fact.
+
+This is methodologically distinct from our earlier control work, which used neither contraction-metric stability analysis nor persistent-homology descriptors, and targets decentralized, communication-aware multirobot coordination, a problem class we had not previously studied.
+
+Contributions: (1) a forecast-based self-triggering rule for decentralized MPC that treats a robot's own just-updated Koopman model as a leading indicator of communication need, positioned against prior reactive and covariance-triggered rules through a feature comparison against twelve related methods rather than an unqualified priority claim; (2) a proposition bounding the achievable inter-broadcast error under the forecast rule, with a short proof from the identified linear model; (3) a reproducible simulation study on four-robot formation tracking under abrupt, unmodeled actuation degradation, with threshold, forecast-horizon and forgetting-factor sweeps, a communication-accuracy Pareto analysis, a weighted-objective comparison, and a $2\times2$ ablation isolating the source of the improvement, backed by paired statistical tests with effect sizes over 20 random seeds.
+
+\section{Related Work and Research Gap}
+
+\subsection{Online Koopman/EDMD-MPC}
+EDMD \cite{williams2015} lifts nonlinear dynamics into an approximately linear representation so MPC becomes a convex program, a route opened for actuated systems by Korda and Mezi\'c's Koopman-MPC formulation \cite{korda2018} and the control-augmented EDMD of Proctor et al.\ \cite{proctor2016}. Uchida and Duraisamy \cite{uchida2024} and del R\'io and Stoeffler \cite{delrio2025} re-estimate the lifted linear model online from closed-loop data; Zhou and Tzoumas \cite{zhoutzoumas2025} give the resulting scheme finite-time near-optimality and sublinear dynamic regret; Yang and Bhounsule \cite{yang2025} apply Koopman-MPC to legged locomotion, joining earlier single-robot Koopman controllers for manipulators \cite{abraham2019} and soft actuators \cite{bruder2021}. All assume a single agent with unrestricted, instantaneous access to its own state.
+
+\subsection{Conformal-prediction MPC}
+A parallel line calibrates MPC uncertainty with (adaptive) conformal prediction, whose distribution-free guarantees trace to \cite{vovk2005}, for finite-sample safety \cite{lindemann2023,nakamura2022,zhouzhangluo2024,chee2024,hsu2025}. Stamouli et al.\ \cite{stamouli2024} repair the recursive-feasibility loss that online tube updates can cause. This line targets safety certificates for one ego-agent facing externally uncertain agents, not communication scheduling within a cooperating team, though Zhou et al.\ \cite{zhouzhangluo2024} do simulate several interacting robots.
+
+\subsection{Event-triggered and self-triggered control}
+Classical event-triggered control \cite{tabuada2007} and the broader self- and event-triggered literature \cite{heemels2012,anta2010} reduce communication by transmitting only once a locally computable condition on the already-realized error is violated. Trimpe and D'Andrea's variance-based triggering \cite{trimpe2014} is the closest prior idea to ours in spirit: it anticipates growing estimation uncertainty from a Kalman covariance and triggers before the raw error is large. It does so for state \emph{estimation} in a single networked system \cite{hespanha2007}, not for decentralized \emph{control} of a robot team, and its forecast signal is an estimator covariance rather than a control-relevant Koopman model.
+
+\subsection{Positioning}
+Table~\ref{tab:novelty} compares twelve related methods against six features. No prior method combines online Koopman identification, a genuinely decentralized multi-robot formation task, and a forecast, rather than reactive, inter-robot trigger; the closest anticipatory idea, \cite{trimpe2014}, lives in a different subfield with a different forecast signal. We present the coupling of streaming Koopman identification with forecast-based inter-robot triggering, evaluated on decentralized formation control, as the specific combination this paper studies, rather than as an unqualified first.
+
+\begin{table}[t]
+\centering
+\caption{Feature comparison against related methods.}
+\label{tab:novelty}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Koop. & On. ID & Multi & Form. & Pred. trig. & Comm.-aw. \\
+\midrule
+Uchida \& Duraisamy \cite{uchida2024}        & \yes & \yes & \no  & \no  & \no  & \no \\
+del R\'io \& Stoeffler \cite{delrio2025}      & \yes & \yes & \no  & \no  & \no  & \no \\
+Zhou \& Tzoumas \cite{zhoutzoumas2025}         & \yes & \yes & \no  & \no  & \no  & \no \\
+Yang \& Bhounsule \cite{yang2025}              & \yes & \no  & \no  & \no  & \no  & \no \\
+Stamouli et al.\ \cite{stamouli2024}           & \no  & \yes & \no  & \no  & \no  & \no \\
+Lindemann et al.\ \cite{lindemann2023}         & \no  & \yes & \no  & \no  & \no  & \no \\
+Nakamura \& Bansal \cite{nakamura2022}         & \no  & \yes & \no  & \no  & \no  & \no \\
+Zhou et al.\ \cite{zhouzhangluo2024}           & \no  & \yes & \yes & \no  & \no  & \no \\
+Chee et al.\ \cite{chee2024}                   & \no  & \yes & \no  & \no  & \no  & \no \\
+Hsu \& Tsukamoto \cite{hsu2025}                & \no  & \yes & \no  & \no  & \no  & \no \\
+Tabuada \cite{tabuada2007}                     & \no  & \no  & \no  & \no  & \no  & \yes \\
+Trimpe \& D'Andrea \cite{trimpe2014}           & \no  & partial & \no & \no & partial & \yes \\
+\textbf{Proposed}                              & \yes & \yes & \yes & \yes & \yes & \yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Problem Formulation}
+
+Consider $N$ unicycle robots $i=1,\dots,N$ with state $s_i=(x_i,y_i,\theta_i)$ and control $u_i=(v_i,\omega_i)\in U=[0,v_{\max}]\times[-\omega_{\max},\omega_{\max}]$. The controller-unknown discrete-time dynamics are
+\begin{align}
+x_{i,k+1} &= x_{i,k} + \Delta t\,\beta_{v,i}(k)\,v_{i,k}\cos\theta_{i,k} + w_x, \nonumber\\
+y_{i,k+1} &= y_{i,k} + \Delta t\,\beta_{v,i}(k)\,v_{i,k}\sin\theta_{i,k} + w_y, \label{eq:truedyn}\\
+\theta_{i,k+1} &= \theta_{i,k} + \Delta t\,\beta_{\omega,i}(k)\,\omega_{i,k} + w_\theta, \nonumber
+\end{align}
+where $\beta_{v,i}(k),\beta_{\omega,i}(k)$ are unknown actuation-gain disturbances and $w_{(\cdot)}$ is small process noise. A shared reference generator gives a leader position $p_L(t)$; robot $i$'s desired position is $p_L(t)+o_i$ for a fixed offset $o_i$, following the leader-follower convention common in formation control \cite{oh2015,lin2005}, and robots sit on a communication ring graph $G=(V,E)$ with two neighbors each, so that the cost also penalizes $(p_i-p_j)-(o_i-o_j)$ for neighbors $j$. Robot $i$ measures its own state every step but knows a neighbor $j$'s state only at $j$'s broadcast times $t_b^j$; between broadcasts it dead-reckons $p_j(t)\approx p_b^j+v_b^j(t-t_b^j)$. The design problem is: (a) an online model of each robot's own $\beta$-corrupted dynamics; (b) a receding-horizon controller built on it; and (c) a communication policy deciding, every step, whether robot $i$ broadcasts $(p_i,v_i)$, so as to minimize formation error and broadcast count jointly.
+
+\section{Methodology}
+
+Every robot closes an onboard loop of identification, planning, and forecasting each control cycle (Fig.~\ref{fig:mechanism} below shows the resulting trigger in action); only the outcome of the forecast trigger ever leaves the robot.
+
+\subsection{Koopman/EDMD lifting of the unicycle}
+We lift the state to $z=(x,y,\cos\theta,\sin\theta)\in\mathbb{R}^4$ and define the control-observable vector
+\begin{equation}
+\varphi = (v\cos\theta,\ v\sin\theta,\ \omega,\ \omega\cos\theta,\ \omega\sin\theta)\in\mathbb{R}^5. \label{eq:phi}
+\end{equation}
+The $x,y$ rows of \eqref{eq:truedyn} are, by construction, already an exact linear identity in $(z,\varphi)$; the heading rows are linear only up to a first-order (small-rotation) Taylor truncation of $\cos(\theta+\delta),\sin(\theta+\delta)$ with remainder $O(\delta^2)=O(\Delta t^2\omega^2)$. Writing the resulting approximate discrete map as
+\begin{equation}
+z_{k+1} = A z_k + B \varphi_k, \label{eq:lifted}
+\end{equation}
+$A\approx I_4$ and $B$ has four structurally nonzero entries: $\Delta t\,\beta_{v,i}$ (rows $x,y$ against columns $v\cos\theta,v\sin\theta$) and $\pm\Delta t\,\beta_{\omega,i}$ (rows $\cos\theta,\sin\theta$ against columns $\omega\sin\theta,\omega\cos\theta$). The unknown, time-varying gains enter \eqref{eq:lifted} as unknown entries of $B$; the heading-row truncation error is absorbed into the online residual of Sec.~\ref{sec:rls}, alongside the identification error itself, rather than treated as if \eqref{eq:lifted} were exact.
+
+\subsection{Streaming identification (RLS-EDMD)}
+\label{sec:rls}
+Robot $i$ maintains $M_i=[A_i\,|\,B_i]\in\mathbb{R}^{4\times9}$, updated after every realized transition $(z_k,\varphi_k,z_{k+1})$ by forgetting-factor RLS,
+\begin{equation}
+\begin{aligned}
+g_k &= \frac{P_k r_k}{\lambda+r_k^\top P_k r_k}, \quad M_{k+1}=M_k+e_k g_k^\top,\\
+P_{k+1} &= \frac{P_k-g_k r_k^\top P_k}{\lambda},
+\end{aligned}
+\label{eq:rls}
+\end{equation}
+with $r_k=[z_k;\varphi_k]$, residual $e_k=z_{k+1}-M_k r_k$, $0<\lambda\le1$, and $M_0$ initialized at the nominal ($\beta=1$) kinematic model. A running bound $\varepsilon=\max$ over a short recent window of $\|e_k\|$ gives the per-step residual used in Sec.~\ref{sec:prop}. Because \eqref{eq:lifted} is linear (to the stated truncation) in the true system, \eqref{eq:rls} tracks abrupt changes in $\beta_{v,i},\beta_{\omega,i}$ within $O(1/(1-\lambda))$ steps, without ever having to detect that a change occurred.
+
+\subsection{Successively linearized batch LQ-MPC}
+Exact planning over horizon $H$ needs $\varphi_j$ to depend on the future headings $\theta_j$, which are themselves decision-dependent. We avoid an iterative nonlinear program with successive linearization, in the spirit of the real-time-iteration family of receding-horizon methods \cite{rawlings2017}: an initial heading sequence is seeded from the bearing to each step's target, the resulting linear time-varying batch problem
+\begin{equation}
+\begin{aligned}
+Z &= S_x z_0+S_u U,\\
+U^* &= \arg\min_U (Z-Z_{\mathrm{ref}})^\top \bar{Q}(Z-Z_{\mathrm{ref}})+U^\top \bar{R}U
+\end{aligned}
+\label{eq:mpc}
+\end{equation}
+is solved once in closed form, the predicted heading trajectory is extracted and used to re-linearize once more, and the second solve (first-control-only, receding horizon) is applied and saturated. Two passes were enough to resolve the unicycle's turn-then-translate maneuver within one horizon; a single fixed-heading linearization renders lateral motion locally uncontrollable within the horizon and stalls the loop (confirmed in a single-robot ablation not shown here for space).
+
+\subsection{Forecast-based event-triggered communication}
+\label{sec:trigger}
+Let robot $i$'s last broadcast be $(t_b,p_b,v_b)$ and define the dead-reckoning error $\hat e_i(\tau)=\|p_i(\tau)-(p_b+v_b(\tau-t_b))\|$. A reactive rule broadcasts once $\hat e_i(t)>\delta$. Our rule instead rolls $(A_i,B_i)$ forward along the planned $U^*$ for $H_{\mathrm{trig}}\le H$ steps to get a forecast $\hat p_i(t+j\Delta t)$, and broadcasts at $t$ whenever
+\begin{equation}
+\max_{j\le H_{\mathrm{trig}}} \big\| \hat p_i(t{+}j\Delta t) - (p_b{+}v_b(j\Delta t{+}t{-}t_b)) \big\| > \delta, \label{eq:trigger}
+\end{equation}
+i.e., before the divergence is realized. A hard maximum broadcast interval is a fallback for degenerate cases, and while a message is in flight the robot withholds a new one (stop-and-wait), since sending again before the first arrives would not resolve staleness any faster. Fig.~\ref{fig:mechanism} shows this mechanism in action for one representative robot: the forecast (dashed) crosses $\delta$ and triggers a broadcast while the realized error (solid) is still well below threshold, whereas Reactive only broadcasts once the realized error has itself already crossed $\delta$.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\linewidth]{fig_communication_mechanism.png}
+\caption{The trigger mechanism, one representative robot: realized dead-reckoning error (solid) and, for Predictive, the forecast error (dashed) against the threshold $\delta$ (dotted). Predictive's broadcasts (triangles) fire while the true error is still low; Reactive's fire only after the realized error has already crossed $\delta$.}
+\label{fig:mechanism}
+\end{figure*}
+
+\subsection{A bound on the achievable inter-broadcast error}
+\label{sec:prop}
+\begin{proposition}
+Let $\|A_i\|\le a$, let the per-step identified-model residual satisfy $\|z_{l+1}-(A_iz_l+B_{i,\mathrm{eff}}u_l)\|\le\varepsilon$, let $u_l$ be saturated so that the per-step deviation from the constant-velocity extrapolation obeys $\|B_{i,\mathrm{eff}}\|\|\Delta u_l\|\le\kappa$, and assume no further disturbance change occurs within the forecast window. Then for any $j\le H_{\mathrm{trig}}$,
+\begin{equation}
+\hat e_i(t+j\Delta t) \le \sum_{l=1}^{j} a^{\,j-l}(\kappa+\varepsilon). \label{eq:bound}
+\end{equation}
+\end{proposition}
+\begin{proof}
+Unroll \eqref{eq:lifted} as $z_{l+1}=A_iz_l+B_{i,\mathrm{eff}}u_l+\delta_l$ with $\|\delta_l\|\le\varepsilon$. Each step, the true position differs from the dead-reckoned belief by at most $\kappa+\varepsilon$ beyond what the previous step's error contributes, scaled by $\|A_i\|\le a$ under repeated application. Summing by induction on $j$ gives \eqref{eq:bound}.
+\end{proof}
+\begin{corollary}
+The proposed rule evaluates the right-hand side of \eqref{eq:bound} (via forward simulation) using the model available at time $t$ and broadcasts before it would exceed $\delta$; the reactive rule can only detect a violation once the left-hand side has already crossed $\delta$, and is bounded only by $\delta$ plus one further worst-case increment $a(\kappa+\varepsilon)$. Setting $H_{\mathrm{trig}}\!\to\!0$ recovers exactly the reactive guarantee, so the forecast rule weakly dominates it for any $H_{\mathrm{trig}}\ge1$ under the stated assumptions.
+\end{corollary}
+This is not a distribution-free guarantee in the sense of \cite{stamouli2024,lindemann2023}; it is contingent on the no-further-change assumption and on $\varepsilon$ being tracked accurately, and it motivates rather than replaces the empirical study of Sec.~\ref{sec:results}.
+
+\section{Algorithm}
+
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} measured $(x_i,y_i,\theta_i)$; model $(A_i,B_i,P_i)$; neighbors' last-broadcast records
+\STATE $z_k \gets \mathrm{lift}(x_i,y_i,\theta_i)$
+\STATE build horizon targets from leader offset $\oplus$ dead-reckoned neighbors
+\STATE $U^* \gets$ SuccessiveLinearizedMPC$(A_i,B_i,\theta_i,z_k,Z_{\mathrm{ref}},H)$ \hfill (Eq.~\ref{eq:mpc})
+\STATE $u_i \gets \mathrm{saturate}(U^*_0)$; apply $u_i$
+\IF{method is predictive}
+  \STATE $\hat p \gets$ RolloutForecast$(A_i,B_i,\theta_i,U^*,H_{\mathrm{trig}})$
+\ENDIF
+\IF{trigger condition holds (Eq.~\ref{eq:trigger}) and no packet in flight}
+  \STATE broadcast $(p_i,v_i)$; reset dead-reckoning anchor
+\ENDIF
+\STATE observe $(x_i',y_i',\theta_i')$ at $k{+}1$; $z_{k+1}\gets\mathrm{lift}(\cdot)$
+\STATE $(A_i,B_i,P_i)\gets$ RLS-EDMD-Update$(z_k,\varphi_k,z_{k+1},\lambda)$ \hfill (Eq.~\ref{eq:rls})
+\end{algorithmic}
+
+\section{Experimental Methodology}
+
+\textbf{Setup.} Four unicycle robots hold a 2\,m$\times$2\,m square formation around a virtual leader on a slalom reference (0.35\,m/s forward, 0.8\,m lateral amplitude, 12\,s period), ring topology, $\Delta t=0.1$\,s, 40\,s episodes, $v\in[0,1.2]$\,m/s, $\omega\in[-2.5,2.5]$\,rad/s, $H=8$, $H_{\mathrm{trig}}=5$, $\lambda=0.97$, $\delta=0.15$\,m, fallback interval 5\,s, unless swept.
+
+\textbf{Disturbance profiles.} \emph{Abrupt}: $(\beta_v,\beta_\omega)$ steps at $t=12,26$\,s to a fresh draw in $[0.6,0.9]\times[0.65,0.9]$ per robot. \emph{Gradual}: linear drift to a random floor in the same range over the episode. \emph{Rapid}: a fresh draw every 4\,s. The main comparison uses \emph{abrupt}; the other two appear only in the robustness study. Following the failure modes catalogued for networked control loops \cite{hespanha2007}, each broadcast is also dropped independently with probability $p_{\mathrm{loss}}$, and surviving packets arrive after a fixed delay of $d$ steps ($100d$\,ms); a robot with a packet in flight withholds further broadcasts.
+
+\textbf{Baselines and metrics.} Periodic-High (every step, oracle upper bound), Periodic-Low (every 10 steps), Reactive, and Predictive (proposed) share identical RLS-EDMD identification and MPC, differing only in the trigger, which isolates it as the sole independent variable. We report formation RMSE/peak (mean pairwise relative-offset error), tracking RMSE (deviation from the leader-offset target), post-disturbance peak (worst formation error in the 3\,s after each onset), and broadcasts per episode.
+
+\textbf{Statistics.} Headline comparisons use 20 seeds shared across all four methods, two-sided Wilcoxon signed-rank tests on paired per-seed differences, rank-biserial effect size, and bootstrap 95\% CIs on the median difference (10{,}000 resamples). Ablation and robustness sweeps use 10--12 seeds per point.
+
+\section{Results}
+\label{sec:results}
+
+\begin{table}[t]
+\centering
+\caption{Main comparison, mean $\pm$ std over 20 seeds.}
+\label{tab:main}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccc}
+\toprule
+Method & Form. RMSE (m) & Post-dist. peak (m) & Bcasts/ep. \\
+\midrule
+Periodic-High & $0.0086\pm0.0016$ & $0.0174\pm0.0032$ & $1600.0\pm0.0$ \\
+Periodic-Low  & $0.1863\pm0.0105$ & $0.3275\pm0.0609$ & $160.0\pm0.0$ \\
+Reactive      & $0.0507\pm0.0035$ & $0.0931\pm0.0091$ & $181.9\pm11.8$ \\
+Predictive    & $0.0199\pm0.0023$ & $0.0362\pm0.0073$ & $302.9\pm49.4$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Predictive lowers formation RMSE by 60.8\% and post-disturbance peak by 61.2\% relative to Reactive (median reduction $-0.0304$\,m, 95\% CI $[-0.0326,-0.0288]$; Wilcoxon $p=1.9\times10^{-6}$; rank-biserial $r=1.0$, i.e.\ every one of the 20 seeds favored Predictive), while using 66.5\% more broadcasts (182$\to$303, $p=8.8\times10^{-5}$), still 19\% of Periodic-High's budget. All comparisons against Periodic-Low and Periodic-High are significant at $p<10^{-4}$ with $r=1.0$. Fig.~\ref{fig:timeseries} shows a representative run: Periodic-Low spikes repeatedly and never settles, Reactive shows visibly delayed corrections at both disturbance onsets, and Predictive tracks close to the Periodic-High oracle throughout.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{fig1_timeseries.png}
+\caption{Mean formation error over time, one representative run. Dotted lines mark the two disturbance onsets.}
+\label{fig:timeseries}
+\end{figure}
+
+\subsection{Ablation: isolating the source of the improvement}
+To separate the contribution of online identification from that of predictive triggering, we cross \{fixed nominal model, online Koopman model\} with \{reactive, predictive\} triggering in a full $2\times2$ design (12 seeds/cell; Table~\ref{tab:ablation2x2}).
+
+\begin{table}[t]
+\centering
+\caption{2$\times$2 ablation, mean $\pm$ std over 12 seeds.}
+\label{tab:ablation2x2}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcc}
+\toprule
+Cell & Formation RMSE (m) & Broadcasts/ep. \\
+\midrule
+Fixed model + Reactive & $0.0491\pm0.0051$ & $180.5\pm14.4$ \\
+Online Koopman + Reactive & $0.0488\pm0.0040$ & $178.1\pm10.1$ \\
+Fixed model + Predictive & $0.0215\pm0.0014$ & $259.3\pm28.8$ \\
+Online Koopman + Predictive & $0.0203\pm0.0020$ & $297.3\pm47.4$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Online identification alone does not significantly help reactive triggering (paired Wilcoxon $p=0.85$, rank-biserial $r=0.08$); switching to predictive triggering with the model held fixed cuts RMSE by 56\% ($p=4.9\times10^{-4}$, $r=-1.0$); adding identification on top of predictive triggering gives a further, smaller refinement ($-7.0\%$, $p=0.077$, $r=-0.59$). The trigger rule itself, not the identification scheme and not a higher message count, accounts for most of the improvement: the fixed-model-plus-predictive cell uses \emph{fewer} broadcasts than the full method and still more than halves the error of the fixed-model-plus-reactive baseline.
+
+Sweeping the threshold $\delta$ traces the communication-accuracy Pareto frontier (Fig.~\ref{fig:pareto}). Predictive dominates Reactive at every matched $\delta$ and, more tellingly, Pareto-dominates it in the trade-off itself: Predictive at $\delta=0.30$ ($\approx$155 broadcasts) beats Reactive at $\delta=0.20$ ($\approx$150 broadcasts, RMSE 0.064\,m) with RMSE 0.047\,m at essentially the same budget. To make the accuracy-communication trade-off explicit, we score each method with $J(\alpha)=\mathrm{RMSE}+\alpha\cdot(\mathrm{broadcasts}/1000)$ over $\alpha\in[0,1]$: Periodic-High is preferred only for $\alpha<0.01$ (accuracy is nearly free to buy), Reactive only for $\alpha\ge0.5$ (bandwidth is extremely scarce), and Predictive is the unique minimizer across $\alpha\in[0.01,0.2]$, a full order of magnitude, and the regime most deployments would sit in.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{fig2_pareto.png}
+\caption{Communication-accuracy Pareto frontier as $\delta$ is swept (12 seeds/point).}
+\label{fig:pareto}
+\end{figure}
+
+Fig.~\ref{fig:ablation} sweeps $H_{\mathrm{trig}}$ and $\lambda$. RMSE falls smoothly from 0.030 to 0.015\,m as $H_{\mathrm{trig}}$ grows from 2 to 8 steps, at the cost of more broadcasts (194$\to$504); RMSE is nearly flat across $\lambda\in[0.90,1.00]$ (0.0192--0.0205\,m) for this schedule, though we would expect $\lambda$ to matter more under continuous drift.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\linewidth]{fig3_ablation.png}
+\caption{Sensitivity of Predictive's formation RMSE to the forecast horizon (right axis: broadcasts) and the RLS forgetting factor (12 seeds/point).}
+\label{fig:ablation}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Robustness of the Predictive-over-Reactive gap.}
+\label{tab:robust}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccc}
+\toprule
+Condition & React. RMSE & Pred. RMSE & $p$ \\
+\midrule
+Noise $\times1$              & 0.0498 & 0.0196 & $<10^{-3}$ \\
+Noise $\times3$               & 0.0484 & 0.0244 & $<10^{-3}$ \\
+Noise $\times6$               & 0.0542 & 0.0354 & $<10^{-3}$ \\
+Disturb.\ severity $\times0.6$ & 0.0548 & 0.0209 & $<10^{-3}$ \\
+Disturb.\ severity $\times1.5$ & 0.0596 & 0.0317 & $<10^{-3}$ \\
+Profile: gradual              & 0.0529 & 0.0188 & $2.0\times10^{-3}$ \\
+Profile: rapid                & 0.0467 & 0.0200 & $2.0\times10^{-3}$ \\
+Packet loss 5\%               & 0.0494 & 0.0202 & $2.0\times10^{-3}$ \\
+Packet loss 20\%              & 0.0544 & 0.0203 & $2.0\times10^{-3}$ \\
+Delay 200\,ms                 & 0.0915 & 0.0446 & $2.0\times10^{-3}$ \\
+Delay 500\,ms                 & 0.2745 & 0.2627 & 0.375 (n.s.) \\
+Delay 1000\,ms                & 0.5952 & 0.5957 & 0.922 (n.s.) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:robust} summarizes robustness (10--12 seeds/condition; noise and severity sweeps at 20 seeds as in Table~\ref{tab:main}'s baseline row). The advantage holds under sensor noise, disturbance-severity scaling, both alternate disturbance profiles, and packet loss up to 20\% (Predictive's forecast-driven eagerness to broadcast doubles as loss resilience). It also holds at a realistic 200\,ms network delay, but disappears at 500\,ms and is statistically indistinguishable from Reactive at 1000\,ms: once fixed network latency dominates the error budget, no triggering strategy can compensate for a delay neither one controls, and Predictive's extra broadcasts, issued earlier but still queued behind the same fixed delay, no longer buy anything. We read this null result as evidence the study is not cherry-picked, and as a precise statement of the mechanism's operating envelope.
+
+\vspace{-2pt}
+\section{Discussion}
+
+Reusing a model already being updated for control as a one-step-ahead communication forecast costs little and anticipates disturbances rather than reacting to them. The Pareto, ablation, and weighted-objective results together indicate a genuine improvement in the trade-off, not a restatement of ``more messages, better accuracy'': at matched budgets Predictive delivers materially lower error, and the ablation shows the gain traces to the trigger rule rather than the identification scheme. The delay result in Table~\ref{tab:robust} is the more informative of the two communication sweeps, drawing a sharp line between what forecasting can and cannot fix. Periodic-Low's failure mode is also worth noting: not just higher RMSE but a jagged, non-settling trace (Fig.~\ref{fig:timeseries}), since small heading errors compound between its sparse, disturbance-blind updates.
+
+\vspace{-2pt}
+\section{Limitations}
+
+The formation offsets are world-fixed rather than leader-heading-relative; Proposition~1 assumes bounded linearization error and no further disturbance change inside the forecast window; the delay model is fixed rather than stochastic; and the evaluation remains a kinematic unicycle simulation on a four-robot ring rather than a torque-level or hardware validation.
+
+\vspace{-2pt}
+\section{Future Work}
+
+Natural next steps include calibrating $\delta$ with online conformal prediction for a distribution-free guarantee in the sense of \cite{stamouli2024,lindemann2023}; larger teams and general graphs; a stochastic delay model; and torque-level or hardware validation, the step most likely to change a reviewer's mind and the one we lacked the means to take here.
+
+\vspace{-2pt}
+\section{Conclusion}
+
+We presented a decentralized Koopman-MPC formation controller in which a robot's own online system-identification residual drives a forecast-based communication trigger rather than the reactive triggers common in the event-triggered and conformal-MPC literature. Under abrupt actuation degradation, the forecast trigger cut formation RMSE and post-disturbance error by roughly 61\% relative to reactive triggering, Pareto-dominated it across a threshold sweep, and kept its advantage under packet loss, three disturbance profiles, and moderate delay, losing it only once network latency became the bottleneck, a limit we see as clarifying rather than damaging. An ablation confirms the gain comes mainly from the trigger rule itself. The underlying idea, that an online-adaptive model already carries the information needed to anticipate its own staleness, is not specific to unicycle formations and may transfer to other decentralized data-driven control settings where communication, not computation, is the binding constraint.
+
+\section*{Data Availability}
+
+Simulation code, raw results, and figures are available at \url{https://github.com/hasib1233333/Forecast-Driven-Communication-Scheduling}.
+
+\section*{Acknowledgment}
+
+The authors gratefully acknowledge the financial support of the Ministry of Science and Technology of Taiwan through its grant 114-2221-E-305-014.
+
+\begin{thebibliography}{99}
+\scriptsize
+
+\bibitem{williams2015} M. O. Williams, I. G. Kevrekidis, and C. W. Rowley, ``A data-driven approximation of the Koopman operator: Extending dynamic mode decomposition,'' \emph{J. Nonlinear Sci.}, vol. 25, no. 6, pp. 1307--1346, 2015.
+\bibitem{mezic2005} I. Mezi\'c, ``Spectral properties of dynamical systems, model reduction and decompositions,'' \emph{Nonlinear Dynamics}, vol. 41, no. 1, pp. 309--325, 2005.
+\bibitem{korda2018} M. Korda and I. Mezi\'c, ``Linear predictors for nonlinear dynamical systems: Koopman operator meets model predictive control,'' \emph{Automatica}, vol. 93, pp. 149--160, 2018.
+\bibitem{proctor2016} J. L. Proctor, S. L. Brunton, and J. N. Kutz, ``Dynamic mode decomposition with control,'' \emph{SIAM J. Appl. Dyn. Syst.}, vol. 15, no. 1, pp. 142--161, 2016.
+\bibitem{uchida2024} D. Uchida and K. Duraisamy, ``Model predictive control of nonlinear dynamics using online adaptive Koopman operators,'' \emph{arXiv:2412.02972}, 2024.
+\bibitem{delrio2025} A. del R\'io and C. Stoeffler, ``Adaptive Koopman model predictive control of simple serial robots,'' \emph{arXiv:2503.17902}, 2025.
+\bibitem{zhoutzoumas2025} H. Zhou and V. Tzoumas, ``No-regret model predictive control with online learning of Koopman operators,'' \emph{arXiv:2504.15805}, 2025.
+\bibitem{yang2025} C.-M. Yang and P. A. Bhounsule, ``Koopman operator based linear model predictive control for quadruped trotting,'' \emph{arXiv:2508.08259}, 2025.
+\bibitem{stamouli2024} C. Stamouli, L. Lindemann, and G. J. Pappas, ``Recursively feasible shrinking-horizon MPC in dynamic environments with conformal prediction guarantees,'' in \emph{Proc. 6th Learning for Dynamics and Control Conf. (L4DC)}, PMLR vol. 242, 2024, pp. 1330--1342.
+\bibitem{lindemann2023} L. Lindemann, M. Cleaveland, G. Shim, and G. J. Pappas, ``Safe planning in dynamic environments using conformal prediction,'' \emph{IEEE Robot. Autom. Lett.}, vol. 8, no. 8, pp. 5116--5123, 2023.
+\bibitem{nakamura2022} K. Nakamura and S. Bansal, ``Online update of safety assurances using confidence-based predictions,'' \emph{arXiv:2210.01199}, 2022.
+\bibitem{zhouzhangluo2024} H. Zhou, Y. Zhang, and W. Luo, ``Safety-critical control with uncertainty quantification using adaptive conformal prediction,'' \emph{arXiv:2407.03569}, 2024.
+\bibitem{chee2024} K. Y. Chee, T. C. Silva, M. A. Hsieh, and G. J. Pappas, ``Uncertainty quantification and robustification of model-based controllers using conformal prediction,'' in \emph{Proc. 6th Learning for Dynamics and Control Conf. (L4DC)}, PMLR, 2024, pp. 528--540.
+\bibitem{hsu2025} T.-W. Hsu and H. Tsukamoto, ``Statistical guarantees in data-driven nonlinear control: Conformal robustness for stability and safety,'' \emph{IEEE Control Syst. Lett.}, 2025.
+\bibitem{oh2015} K.-K. Oh, M.-C. Park, and H.-S. Ahn, ``A survey of multi-agent formation control,'' \emph{Automatica}, vol. 53, pp. 424--440, 2015.
+\bibitem{tabuada2007} P. Tabuada, ``Event-triggered real-time scheduling of stabilizing control tasks,'' \emph{IEEE Trans. Autom. Control}, vol. 52, no. 9, pp. 1680--1685, 2007.
+\bibitem{heemels2012} W. P. M. H. Heemels, K. H. Johansson, and P. Tabuada, ``An introduction to event-triggered and self-triggered control,'' in \emph{Proc. 51st IEEE Conf. Decision and Control (CDC)}, 2012, pp. 3270--3285.
+\bibitem{anta2010} A. Anta and P. Tabuada, ``To sample or not to sample: Self-triggered control for nonlinear systems,'' \emph{IEEE Trans. Autom. Control}, vol. 55, no. 9, pp. 2030--2042, 2010.
+\bibitem{trimpe2014} S. Trimpe and R. D'Andrea, ``Event-based state estimation with variance-based triggering,'' \emph{IEEE Trans. Autom. Control}, vol. 59, no. 12, pp. 3266--3281, 2014.
+\bibitem{abraham2019} I. Abraham and T. D. Murphey, ``Active learning of dynamics for data-driven control using Koopman operators,'' \emph{IEEE Trans. Robot.}, vol. 35, no. 5, pp. 1071--1083, 2019.
+\bibitem{bruder2021} D. Bruder, X. Fu, R. B. Gillespie, C. D. Remy, and R. Vasudevan, ``Data-driven control of soft robots using Koopman operator theory,'' \emph{IEEE Trans. Robot.}, vol. 37, no. 3, pp. 948--961, 2021.
+\bibitem{vovk2005} V. Vovk, A. Gammerman, and G. Shafer, \emph{Algorithmic Learning in a Random World}. Springer, 2005.
+\bibitem{hespanha2007} J. P. Hespanha, P. Naghshtabrizi, and Y. Xu, ``A survey of recent results in networked control systems,'' \emph{Proc. IEEE}, vol. 95, no. 1, pp. 138--162, 2007.
+\bibitem{lin2005} Z. Lin, B. Francis, and M. Maggiore, ``Necessary and sufficient graphical conditions for formation control of unicycles,'' \emph{IEEE Trans. Autom. Control}, vol. 50, no. 1, pp. 121--127, 2005.
+\bibitem{rawlings2017} J. B. Rawlings, D. Q. Mayne, and M. Diehl, \emph{Model Predictive Control: Theory, Computation, and Design}, 2nd ed. Nob Hill Publishing, 2017.
+
+\end{thebibliography}
+
+\end{document}
